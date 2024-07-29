@@ -1,7 +1,8 @@
----
-author: Gaurav Jangid
-title: DevOps SFDX CI/CD
-date: 2024-07-24
+
+### Author: Gaurav Jangid
+### Title: DevOps SFDX CI/CD
+### Date: 2024-07-24
+
 ---
 
 # Salesforce DevOps pipelines setup (GitLab)
