@@ -1,0 +1,144 @@
+stages:
+  - MR_develop_to_QA
+  - pmd
+  - run_validation
+  - QA_deployment
+  - UAT_deployment
+
+variables:
+  PMD_VERSION: "7.0.0"
+  GITLAB_API_URL: "https://abcd.abcdd.com/api/v4"
+  ASSIGNEE_ID: "329"
+  REVIEWER_ID: "329"
+
+create_merge_request:
+  stage: MR_develop_to_QA
+  image: curlimages/curl:latest
+  script:
+    - echo "$CI_PROJECT_ID"
+    - echo "$GITLAB_API_URL/projects/$CI_PROJECT_ID/merge_requests"
+    - echo "${#GITLAB_ACCESS_TOKEN} characters long"
+    - >
+      curl --request POST --header "PRIVATE-TOKEN: $GITLAB_ACCESS_TOKEN"
+      --data "source_branch=develop&target_branch=QA&title=Draft:[DO NOT MERGE]UAT Deployment&remove_source_branch=false&assignee_id=$ASSIGNEE_ID&reviewer_ids=$REVIEWER_ID"
+      "$GITLAB_API_URL/projects/$(echo $CI_PROJECT_ID)/merge_requests"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+pmd_analysis:
+  stage: pmd
+  image: ubuntu:latest
+  before_script:
+    - apt-get update
+    - apt-get install -y wget default-jdk unzip
+    - wget https://github.com/pmd/pmd/releases/download/pmd_releases/$PMD_VERSION-rc4/pmd-dist-$PMD_VERSION-rc4-bin.zip
+    - unzip pmd-dist-$PMD_VERSION-rc4-bin.zip -d ~
+    - chmod a+x ~/pmd-bin-7.0.0-rc4/shell/pmd-completion.sh
+  script:
+    - bash bashScripts/countError.sh
+    - echo "PMD Script - PR raised"
+
+  rules:
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"'
+
+validateBeforeQACommit:
+  image: ubuntu:latest
+  stage: run_validation
+  before_script:
+    - apt-get update
+    - apt-get install -y wget default-jdk unzip xz-utils git  # Install JDK and wget
+    - wget https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-x64.tar.xz
+    - mkdir ~/cli
+    - mkdir ~/cli/sf
+    - tar xJf sf-linux-x64.tar.xz -C ~/cli/sf --strip-components 1
+    - export PATH="$HOME/cli/sf/bin:$PATH"
+    - PATH=$HOME/cli/sf/bin:$PATH
+    - ~/cli/sf/bin/sf version
+    - |
+      if [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" == "develop"  ]; then
+        echo "  "
+        echo "Authenticating in QA sandbox.... ⏱️"
+        echo " "
+        sf login org jwt --alias deployOrg --client-id ${QA_CONSUMER_KEY} --jwt-key-file accesskey/server.key --set-default --set-default-dev-hub --instance-url https://test.salesforce.com --username ${QA_USERNAME}
+        echo " "
+        echo "Successfully authenticated in QA sandbox ✅"
+        echo " "
+      fi
+  script:
+    - echo 'y' | sfdx plugins:install sfdx-git-delta
+    # - sfdx sgd:source:delta --to "HEAD" --from "HEAD~1" --output .
+    - sfdx sgd:source:delta --to "$CI_COMMIT_SHA" --from "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --output .
+    - cat package/package.xml > pack.xml
+    - cat pack.xml
+    - echo "Validation started ... 🔜"
+    - sf project deploy start --manifest package/package.xml --dry-run --test-level RunLocalTests --target-org deployOrg --verbose
+    - echo "Validation Finished 🎯"
+  rules:
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"
+
+Deploy to QA Sandbox:
+  image: ubuntu:latest
+  stage: QA_deployment
+  before_script:
+    - apt-get update
+    - apt-get install -y wget default-jdk unzip xz-utils git # Install JDK and wget
+    - wget https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-x64.tar.xz
+    - mkdir ~/cli
+    - mkdir ~/cli/sf
+    - tar xJf sf-linux-x64.tar.xz -C ~/cli/sf --strip-components 1
+    - export PATH="$HOME/cli/sf/bin:$PATH"
+    - PATH=$HOME/cli/sf/bin:$PATH
+    - ~/cli/sf/bin/sf version
+    - |
+      if [ "$CI_COMMIT_BRANCH" == "develop"  ]; then
+        echo "  "
+        echo "Authenticating in QA sandbox.... ⏱️"
+        echo " "
+        sf login org jwt --alias deployOrg --client-id ${QA_CONSUMER_KEY} --jwt-key-file accesskey/server.key --set-default --set-default-dev-hub --instance-url https://test.salesforce.com --username ${QA_USERNAME}
+        echo " "
+        echo "Successfully authenticated in QA sandbox ✅"
+        echo " "
+      fi
+  script:
+    - echo 'y' | sfdx plugins:install sfdx-git-delta
+    - sfdx sgd:source:delta --to "HEAD" --from "HEAD~1" --output .
+    - cat package/package.xml > pack.xml
+    - echo "Deployment started ... 🔜"
+    - sf project deploy start --manifest package/package.xml --target-org deployOrg --test-level RunLocalTests --verbose
+    - echo "Deployment Finished 🎯"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+Deploy to UAT:
+  image: ubuntu:latest
+  stage: UAT_deployment
+  before_script:
+    - apt-get update
+    - apt-get install -y wget default-jdk unzip xz-utils git # Install JDK and wget
+    - wget https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-x64.tar.xz
+    - mkdir ~/cli
+    - mkdir ~/cli/sf
+    - tar xJf sf-linux-x64.tar.xz -C ~/cli/sf --strip-components 1
+    - export PATH="$HOME/cli/sf/bin:$PATH"
+    - PATH=$HOME/cli/sf/bin:$PATH
+    - ~/cli/sf/bin/sf version
+    - |
+      if [ "$CI_COMMIT_BRANCH" == "QA"  ]; then
+        echo "  "
+        echo "Authenticating in UAT.... ⏱️"
+        echo " "
+        sf login org jwt --alias deployOrg --client-id ${UAT_CONSUMER_KEY} --jwt-key-file accesskey/server.key --set-default --set-default-dev-hub --instance-url https://test.salesforce.com --username ${UAT_USERNAME}
+        echo " "
+        echo "Successfully authenticated in UAT ✅"
+        echo " "
+      fi
+  script:
+    - echo 'y' | sfdx plugins:install sfdx-git-delta
+    - sfdx sgd:source:delta --to "HEAD" --from "HEAD~1" --output .
+    - cat package/package.xml > pack.xml
+    - echo "Deployment started ... 🔜"
+    - sf project deploy start --manifest package/package.xml --target-org deployOrg --test-level RunLocalTests --verbose
+    - echo "Deployment Finished 🎯"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "QA"
+
